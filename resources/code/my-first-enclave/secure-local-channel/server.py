@@ -6,6 +6,34 @@ import sys
 import json
 import urllib.request
 
+
+class OrdinaryStream:
+    # Client
+    def __init__(self, conn_timeout=30):
+        self.conn_timeout = conn_timeout
+
+    def connect(self, port):
+        # Connect to the remote endpoint PORT specified.
+        try:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.settimeout(self.conn_timeout)
+            self.sock.connect(("127.0.0.1", port))
+        except ConnectionResetError as e:
+            print("Caught error ", str(e.strerror), " ", str(e.errno))
+
+    def send_data(self, data):
+        # Send data to the remote endpoint
+        print(str(self.sock))
+        # encode data before sending
+        self.sock.send(data.encode())
+        print("Data passed to java server ", data)
+        # receiving responce back
+        data = self.sock.recv(1024).decode()  # receive response
+        print('Received from java server: ' + data)  # show in terminal
+        self.sock.close()
+        return data
+
+
 # Running server you have pass port the server  will listen to. For Example:
 # $ python3 /app/server.py server 5005
 class VsockListener:
@@ -26,47 +54,35 @@ class VsockListener:
                 print("Let's accept stuff")
                 (from_client, (remote_cid, remote_port)) = self.sock.accept()
                 print("Connection from " + str(from_client) + str(remote_cid) + str(remote_port))
-                
+
                 query = from_client.recv(1024).decode()
-                print("Message received: " + query)
-                
+                print("Message received from python client: " + query)
+
                 # Call the external URL
                 # for our scenario we will download list of published ip ranges and return list of S3 ranges for porvided region.
-                response = get_s3_ip_by_region(query)
-                
+                # response = get_s3_ip_by_region(query)
+
                 # Send back the response                 
-                from_client.send(str(response).encode())
-    
-                from_client.close()
-                print("Client call closed")
+                # from_client.send(str(response).encode())
+
+                # from_client.close()
+                return query, from_client
             except Exception as ex:
                 print(ex)
+
 
 def server_handler(args):
     server = VsockListener()
     server.bind(args.port)
-    print("Started listening to port : ",str(args.port))
-    server.recv_data()
+    print("Started listening to port : ", str(args.port))
+    (message, vsock_client) = server.recv_data()
 
-# Get list of current ip ranges for the S3 service for a region.
-# Learn more here: https://docs.aws.amazon.com/general/latest/gr/aws-ip-ranges.html#aws-ip-download 
-def get_s3_ip_by_region(region):
-    
-    full_query = 'https://ip-ranges.amazonaws.com/ip-ranges.json'
-    print("Full URL:",full_query)
+    ordinary_client = OrdinaryStream()
+    ordinary_client.connect(args.serverPort)
+    server_response = ordinary_client.send_data(message)
+    vsock_client.send(server_response.encode())
+    vsock_client.close()
 
-    print("URL Open")
-    data = urllib.request.urlopen(full_query)
-
-    print("Handle Response")
-    
-    response = json.loads(data.read())
-    ip_ranges = response['prefixes']
-    s3_ips = []
-    for item in ip_ranges:
-        if (item["service"] == "S3") and (item["region"] == region):
-            s3_ips.append(item["ip_prefix"])
-    return s3_ips
 
 def main():
     parser = argparse.ArgumentParser(prog='vsock-sample')
@@ -78,14 +94,16 @@ def main():
     server_parser = subparsers.add_parser("server", description="Server",
                                           help="Listen on a given port.")
     server_parser.add_argument("port", type=int, help="The local port to listen on.")
+    server_parser.add_argument("serverPort", type=int, help="The local port to java server.")
     server_parser.set_defaults(func=server_handler)
-    
+
     if len(sys.argv) < 2:
         parser.print_usage()
         sys.exit(1)
 
     args = parser.parse_args()
     args.func(args)
+
 
 if __name__ == "__main__":
     main()
